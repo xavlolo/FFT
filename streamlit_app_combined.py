@@ -190,52 +190,78 @@ def fft_extract_E_p(Htop, site, times, n_peaks=3, pad=16, use_hann=True):
     order = np.argsort(E_est)
     return E_est[order], p_est[order], omega, S
 
-# ---------------- Sidebar form (Run/Update) ----------------
+# ---------------- Sidebar controls (no form for selectors; button only) ----------------
 with st.sidebar:
     st.header("Configuration")
-    with st.form("controls"):
-        preset = st.selectbox("Preset", ["Case 1 (diff K, diff J)", "Case 2 (same K, same J)", "Case 3 (same K, diff J)", "Custom"], index=2)
-        if preset == "Case 1 (diff K, diff J)":
-            K14, K25, K36, J12, J23 = 1.0, 1.5, 0.0, 1.0, 2.0
-        elif preset == "Case 2 (same K, same J)":
-            K14, K25, K36, J12, J23 = 1.0, 1.0, 1.0, 1.0, 1.0
-        elif preset == "Case 3 (same K, diff J)":
-            K14, K25, K36, J12, J23 = 0.0, 0.0, 0.0, 1.0, 1.5
-        else:
-            K14 = st.number_input("K14", value=0.0, step=0.1, format="%.3f")
-            K25 = st.number_input("K25", value=0.0, step=0.1, format="%.3f")
-            K36 = st.number_input("K36", value=0.0, step=0.1, format="%.3f")
-            J12 = st.number_input("J12", value=1.0, step=0.1, format="%.3f")
-            J23 = st.number_input("J23", value=1.5, step=0.1, format="%.3f")
 
-        st.markdown("---")
-        st.subheader("Initial state on top sites")
-        init_choice = st.selectbox("Choose |ψ(0)⟩", ["|A⟩", "|B⟩", "|C⟩", "Custom"])
-        if init_choice == "|A⟩":
-            a, b, c = 1.0, 0.0, 0.0
-        elif init_choice == "|B⟩":
-            a, b, c = 0.0, 1.0, 0.0
-        elif init_choice == "|C⟩":
-            a, b, c = 0.0, 0.0, 1.0
-        else:
-            a = st.number_input("a (real)", value=1.0, step=0.1)
-            b = st.number_input("b (real)", value=0.0, step=0.1)
-            c = st.number_input("c (real)", value=0.0, step=0.1)
+    # 1) Preset selection OUTSIDE the form (reruns immediately to reveal custom fields)
+    preset = st.selectbox(
+        "Preset",
+        ["Case 1 (diff K, diff J)", "Case 2 (same K, same J)", "Case 3 (same K, diff J)", "Custom"],
+        index=2,
+        key="preset"
+    )
 
-        st.markdown("---")
-        st.subheader("Sampling")
-        dt   = st.number_input("dt", min_value=1e-4, max_value=0.1, value=0.01, step=0.001, format="%.4f")
-        tmax = st.number_input("tmax", min_value=0.5, max_value=60.0, value=15.0, step=0.5, format="%.2f")
+    # Use previous values if available, so switching back to Custom restores your last inputs
+    def _get(key, default): return st.session_state.get(key, default)
 
-        st.markdown("---")
-        st.subheader("FFT options")
-        site_map = {"A (0)":0, "B (1)":1, "C (2)":2}
-        site = site_map[st.selectbox("Anchor site for f_ss(t)", list(site_map.keys()), index=2)]
-        pad = st.selectbox("Zero-padding factor", [1,2,4,8,16,32], index=4)
-        use_hann = st.checkbox("Apply Hann window", value=True)
-        n_peaks = st.number_input("Number of peaks", min_value=1, max_value=6, value=3, step=1)
+    if preset == "Case 1 (diff K, diff J)":
+        K14, K25, K36, J12, J23 = 1.0, 1.5, 0.0, 1.0, 2.0
+    elif preset == "Case 2 (same K, same J)":
+        K14, K25, K36, J12, J23 = 1.0, 1.0, 1.0, 1.0, 1.0
+    elif preset == "Case 3 (same K, diff J)":
+        K14, K25, K36, J12, J23 = 0.0, 0.0, 0.0, 1.0, 1.5
+    else:
+        # Custom fields are visible immediately because we’re not inside a form
+        K14 = st.number_input("K14", value=_get("K14", 0.0), step=0.1, format="%.3f", key="K14")
+        K25 = st.number_input("K25", value=_get("K25", 0.0), step=0.1, format="%.3f", key="K25")
+        K36 = st.number_input("K36", value=_get("K36", 0.0), step=0.1, format="%.3f", key="K36")
+        J12 = st.number_input("J12", value=_get("J12", 1.0), step=0.1, format="%.3f", key="J12")
+        J23 = st.number_input("J23", value=_get("J23", 1.5), step=0.1, format="%.3f", key="J23")
 
-        run = st.form_submit_button("Run / Update")
+    st.markdown("---")
+
+    # 2) Initial state OUTSIDE the form (so Custom amplitudes appear instantly)
+    st.subheader("Initial state on top sites")
+    init_choice = st.selectbox("Choose |ψ(0)⟩", ["|A⟩", "|B⟩", "|C⟩", "Custom"], key="init_choice")
+    if init_choice == "|A⟩":
+        a, b, c = 1.0, 0.0, 0.0
+    elif init_choice == "|B⟩":
+        a, b, c = 0.0, 1.0, 0.0
+    elif init_choice == "|C⟩":
+        a, b, c = 0.0, 0.0, 1.0
+    else:
+        a = st.number_input("a (real)", value=_get("a", 1.0), step=0.1, key="a")
+        b = st.number_input("b (real)", value=_get("b", 0.0), step=0.1, key="b")
+        c = st.number_input("c (real)", value=_get("c", 0.0), step=0.1, key="c")
+
+    st.markdown("---")
+
+    # 3) Sampling
+    st.subheader("Sampling")
+    dt   = st.number_input("dt", min_value=1e-4, max_value=0.1, value=_get("dt", 0.01), step=0.001, format="%.4f", key="dt")
+    tmax = st.number_input("tmax", min_value=0.5,  max_value=60.0, value=_get("tmax", 15.0), step=0.5,  format="%.2f",  key="tmax")
+
+    st.markdown("---")
+
+    # 4) FFT options
+    st.subheader("FFT options")
+    site_map = {"A (0)":0, "B (1)":1, "C (2)":2}
+    site = site_map[st.selectbox("Anchor site for f_ss(t)", list(site_map.keys()), index=2, key="site_sel")]
+    pad = st.selectbox("Zero-padding factor", [1,2,4,8,16,32], index=4, key="pad")
+    use_hann = st.checkbox("Apply Hann window", value=_get("use_hann", True), key="use_hann")
+    n_peaks = st.number_input("Number of peaks", min_value=1, max_value=6, value=_get("n_peaks", 3), step=1, key="n_peaks")
+
+    st.markdown("---")
+
+    # 5) Single button to trigger heavy compute
+    run = st.button("Run / Update", type="primary", use_container_width=True)
+
+# Build cfg dictionary for your compute function
+cfg = dict(K14=K14, K25=K25, K36=K36, J12=J12, J23=J23,
+           a=a, b=b, c=c, dt=dt, tmax=tmax,
+           site=site, pad=pad, use_hann=use_hann, n_peaks=int(n_peaks))
+
 
 def compute_all(K14,K25,K36,J12,J23,a,b,c,dt,tmax,site,pad,use_hann,n_peaks):
     times = np.arange(0.0, tmax + dt, dt)
