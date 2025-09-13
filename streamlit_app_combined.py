@@ -1,14 +1,11 @@
-
 import numpy as np
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="3-Site Spectral Recovery — Combined App", layout="wide")
-st.title("3-Site Spectral Recovery — Combined App (Matplotlib + Vector Plots)")
-st.caption("Explore effective vs full dynamics, FFT spectral recovery, Lanczos/Jacobi reconstruction, "
-           "compare presets, and run a quick parameter sweep. Plotly tabs render **vector** graphics (SVG).")
+st.set_page_config(page_title="3-Site Spectral Recovery — Vector App (Run Button)", layout="wide")
+st.title("3-Site Spectral Recovery — Vector App")
+st.caption("Vector-crisp plots (SVG) + results. Updates only when you press **Run / Update**.")
 
 # ---------------- Core math utilities ----------------
 N = 6
@@ -42,11 +39,9 @@ def two_qubit(op1, q1, op2, q2):
 
 def build_H_full(K14, K25, K36, J12, J23):
     H = np.zeros((2**N, 2**N), complex)
-    # ZZ vertical couplings
     H += K14 * two_qubit(sz, Q1, sz, Q4)
     H += K25 * two_qubit(sz, Q2, sz, Q5)
     H += K36 * two_qubit(sz, Q3, sz, Q6)
-    # XY top couplings
     H += 0.5 * J12 * (two_qubit(sx, Q1, sx, Q2) + two_qubit(sy, Q1, sy, Q2))
     H += 0.5 * J23 * (two_qubit(sx, Q2, sx, Q3) + two_qubit(sy, Q2, sy, Q3))
     return H
@@ -117,9 +112,9 @@ def milestone_times(Omega, hbar=1.0):
     return labels, values
 
 def analytic_pc_eq6(Htop, psi_top, times, hbar=1.0):
-    w, V = eigh_data(Htop)        # V real, columns are eigenvectors
-    proj0 = V.T @ psi_top         # components of psi0 in eigenbasis
-    d = (V[2, :] * proj0).real    # d_i = v_Ci * (v_i^T psi0), real
+    w, V = eigh_data(Htop)
+    proj0 = V.T @ psi_top
+    d = (V[2, :] * proj0).real
     base = np.sum(d**2)
     w21 = abs(w[1]-w[0]) / hbar
     w31 = abs(w[2]-w[0]) / hbar
@@ -195,49 +190,53 @@ def fft_extract_E_p(Htop, site, times, n_peaks=3, pad=16, use_hann=True):
     order = np.argsort(E_est)
     return E_est[order], p_est[order], omega, S
 
-# ---------------- Sidebar controls ----------------
+# ---------------- Sidebar form (Run/Update) ----------------
 with st.sidebar:
     st.header("Configuration")
-    preset = st.selectbox("Preset", ["Case 1 (diff K, diff J)", "Case 2 (same K, same J)", "Case 3 (same K, diff J)", "Custom"], index=2)
-    if preset == "Case 1 (diff K, diff J)":
-        K14, K25, K36, J12, J23 = 1.0, 1.5, 0.0, 1.0, 2.0
-    elif preset == "Case 2 (same K, same J)":
-        K14, K25, K36, J12, J23 = 1.0, 1.0, 1.0, 1.0, 1.0
-    elif preset == "Case 3 (same K, diff J)":
-        K14, K25, K36, J12, J23 = 0.0, 0.0, 0.0, 1.0, 1.5
-    else:
-        K14 = st.number_input("K14", value=0.0, step=0.1, format="%.3f")
-        K25 = st.number_input("K25", value=0.0, step=0.1, format="%.3f")
-        K36 = st.number_input("K36", value=0.0, step=0.1, format="%.3f")
-        J12 = st.number_input("J12", value=1.0, step=0.1, format="%.3f")
-        J23 = st.number_input("J23", value=1.5, step=0.1, format="%.3f")
+    with st.form("controls"):
+        preset = st.selectbox("Preset", ["Case 1 (diff K, diff J)", "Case 2 (same K, same J)", "Case 3 (same K, diff J)", "Custom"], index=2)
+        if preset == "Case 1 (diff K, diff J)":
+            K14, K25, K36, J12, J23 = 1.0, 1.5, 0.0, 1.0, 2.0
+        elif preset == "Case 2 (same K, same J)":
+            K14, K25, K36, J12, J23 = 1.0, 1.0, 1.0, 1.0, 1.0
+        elif preset == "Case 3 (same K, diff J)":
+            K14, K25, K36, J12, J23 = 0.0, 0.0, 0.0, 1.0, 1.5
+        else:
+            K14 = st.number_input("K14", value=0.0, step=0.1, format="%.3f")
+            K25 = st.number_input("K25", value=0.0, step=0.1, format="%.3f")
+            K36 = st.number_input("K36", value=0.0, step=0.1, format="%.3f")
+            J12 = st.number_input("J12", value=1.0, step=0.1, format="%.3f")
+            J23 = st.number_input("J23", value=1.5, step=0.1, format="%.3f")
 
-    st.subheader("Initial state on top sites")
-    init_choice = st.selectbox("Choose |ψ(0)⟩", ["|A⟩", "|B⟩", "|C⟩", "Custom"])
-    if init_choice == "|A⟩":
-        a, b, c = 1.0, 0.0, 0.0
-    elif init_choice == "|B⟩":
-        a, b, c = 0.0, 1.0, 0.0
-    elif init_choice == "|C⟩":
-        a, b, c = 0.0, 0.0, 1.0
-    else:
-        a = st.number_input("a (real)", value=1.0, step=0.1)
-        b = st.number_input("b (real)", value=0.0, step=0.1)
-        c = st.number_input("c (real)", value=0.0, step=0.1)
+        st.markdown("---")
+        st.subheader("Initial state on top sites")
+        init_choice = st.selectbox("Choose |ψ(0)⟩", ["|A⟩", "|B⟩", "|C⟩", "Custom"])
+        if init_choice == "|A⟩":
+            a, b, c = 1.0, 0.0, 0.0
+        elif init_choice == "|B⟩":
+            a, b, c = 0.0, 1.0, 0.0
+        elif init_choice == "|C⟩":
+            a, b, c = 0.0, 0.0, 1.0
+        else:
+            a = st.number_input("a (real)", value=1.0, step=0.1)
+            b = st.number_input("b (real)", value=0.0, step=0.1)
+            c = st.number_input("c (real)", value=0.0, step=0.1)
 
-    st.subheader("Sampling")
-    dt   = st.number_input("dt", min_value=1e-4, max_value=0.1, value=0.01, step=0.001, format="%.4f")
-    tmax = st.number_input("tmax", min_value=0.5, max_value=60.0, value=15.0, step=0.5, format="%.2f")
+        st.markdown("---")
+        st.subheader("Sampling")
+        dt   = st.number_input("dt", min_value=1e-4, max_value=0.1, value=0.01, step=0.001, format="%.4f")
+        tmax = st.number_input("tmax", min_value=0.5, max_value=60.0, value=15.0, step=0.5, format="%.2f")
 
-    st.subheader("FFT options")
-    site_map = {"A (0)":0, "B (1)":1, "C (2)":2}
-    site = site_map[st.selectbox("Anchor site for f_ss(t)", list(site_map.keys()), index=2)]
-    pad = st.selectbox("Zero-padding factor", [1,2,4,8,16,32], index=4)
-    use_hann = st.checkbox("Apply Hann window", value=True)
-    n_peaks = st.number_input("Number of peaks", min_value=1, max_value=6, value=3, step=1)
+        st.markdown("---")
+        st.subheader("FFT options")
+        site_map = {"A (0)":0, "B (1)":1, "C (2)":2}
+        site = site_map[st.selectbox("Anchor site for f_ss(t)", list(site_map.keys()), index=2)]
+        pad = st.selectbox("Zero-padding factor", [1,2,4,8,16,32], index=4)
+        use_hann = st.checkbox("Apply Hann window", value=True)
+        n_peaks = st.number_input("Number of peaks", min_value=1, max_value=6, value=3, step=1)
 
-# ---------------- Core compute (cached) ----------------
-@st.cache_data(show_spinner=False)
+        run = st.form_submit_button("Run / Update")
+
 def compute_all(K14,K25,K36,J12,J23,a,b,c,dt,tmax,site,pad,use_hann,n_peaks):
     times = np.arange(0.0, tmax + dt, dt)
     Hfull = build_H_full(K14, K25, K36, J12, J23)
@@ -246,14 +245,11 @@ def compute_all(K14,K25,K36,J12,J23,a,b,c,dt,tmax,site,pad,use_hann,n_peaks):
 
     psi_top  = psi0_top(a,b,c); psi_full = psi0_full(a,b,c)
 
-    # effective evolution
     kets_top, _ = evolve_state_in_H(Htop, psi_top, times, hbar=hbar)
     P_A_eff, P_B_eff, P_C_eff = (np.abs(kets_top[:,0])**2, np.abs(kets_top[:,1])**2, np.abs(kets_top[:,2])**2)
 
-    # analytic Eq.(6)
     P_C_analytic, (w, V, d, omegas) = analytic_pc_eq6(Htop, psi_top, times, hbar=hbar)
 
-    # full evolution
     pops_full = populations_full_from_density(Hfull, psi_full, times, dt)
     P_q1_full, P_q2_full, P_q3_full = pops_full[:,Q1], pops_full[:,Q2], pops_full[:,Q3]
 
@@ -264,11 +260,9 @@ def compute_all(K14,K25,K36,J12,J23,a,b,c,dt,tmax,site,pad,use_hann,n_peaks):
     P_C_full_marks = np.interp(m_times, times, P_q3_full)
     PC_analytic_marks, _ = analytic_pc_eq6(Htop, psi_top, np.array(m_times), hbar=hbar)
 
-    # (E,p) at chosen site and Jacobi reconstruction
     E, p = eigvals_and_site_weights(Htop, site=site)
     a_j, b_j, T, logs = jacobi_from_spectral(E, p)
 
-    # FFT-based recovery from return amplitude
     E_est, p_est, omega, S = fft_extract_E_p(Htop, site=site, times=times, n_peaks=n_peaks, pad=pad, use_hann=use_hann)
 
     return dict(times=times, Htop=Htop, Heff=build_Heff_from_paper(K14,K25,K36,J12,J23),
@@ -282,45 +276,29 @@ def compute_all(K14,K25,K36,J12,J23,a,b,c,dt,tmax,site,pad,use_hann,n_peaks):
                 E_true=E, p_true=p, E_est=E_est, p_est=p_est, omega=omega, S=S,
                 params=(K14,K25,K36,J12,J23), site=site, dt=dt, tmax=tmax)
 
-res = compute_all(K14,K25,K36,J12,J23,a,b,c,dt,tmax,site,pad,use_hann,n_peaks)
+# --- Session-state gating: compute only on button press (or on first load) ---
+cfg = dict(K14=K14,K25=K25,K36=K36,J12=J12,J23=J23,a=a,b=b,c=c,dt=dt,tmax=tmax,site=site,pad=pad,use_hann=use_hann,n_peaks=n_peaks)
+if "res" not in st.session_state:
+    # First load: compute once with current defaults
+    with st.spinner("Computing initial results..."):
+        st.session_state.res = compute_all(**cfg)
+        st.session_state.cfg = cfg
+elif run:
+    with st.spinner("Running..."):
+        st.session_state.res = compute_all(**cfg)
+        st.session_state.cfg = cfg
+else:
+    # No run: keep previous results
+    pass
 
-# ---------------- Tabs ----------------
-tab_quick, tab_dyn_mpl, tab_dyn_vec, tab_spec_mpl, tab_spec_vec, tab_lanczos, tab_results, tab_compare, tab_sweep = st.tabs(
-    ["Quick Start", "Dynamics — Matplotlib", "Dynamics — Vector (Plotly)", "Spectrum — Matplotlib",
-     "Spectrum — Vector (Plotly)", "Lanczos", "Results", "Compare Presets", "Sweep (effective)"]
+res = st.session_state.res
+
+# ---------------- Tabs (Vector only) ----------------
+tab_dyn, tab_spec, tab_lanczos, tab_results = st.tabs(
+    ["Dynamics (SVG)", "Spectrum (SVG)", "Lanczos", "Results"]
 )
 
-with tab_quick:
-    st.markdown("""
-**How to use**  
-- Pick a preset (or Custom) and an initial state from the sidebar.  
-- Adjust sampling `dt` and `tmax` (Nyquist/Resolution guidance in **Results** tab).  
-- View either **Matplotlib** or **Vector (Plotly)** plots.  
-- Inspect Lanczos steps and Jacobi matrix in **Lanczos**.  
-- Compare multiple presets in **Compare Presets**.  
-- Run a fast effective-only sweep over $(J_{12},J_{23})$ in **Sweep (effective)**.
-    """)
-
-# ---- Dynamics — Matplotlib ----
-with tab_dyn_mpl:
-    t = res["times"]
-    fig1, ax = plt.subplots(figsize=(7.5, 4.5))
-    ax.plot(t, res['P_A_eff'], '-', alpha=0.9, label=r'$P_A$ eff')
-    ax.plot(t, res['P_B_eff'], '-', alpha=0.9, label=r'$P_B$ eff')
-    ax.plot(t, res['P_C_eff'], '-', alpha=1.0, label=r'$P_C$ eff')
-    ax.plot(t, res['P_q1_full'], '--', label=r'$P_{q1}$ full')
-    ax.plot(t, res['P_q2_full'], '--', label=r'$P_{q2}$ full')
-    ax.plot(t, res['P_q3_full'], '--', label=r'$P_{q3}$ full')
-    for mt in res['m_times']:
-        ax.axvline(mt, linestyle=":", alpha=0.2)
-    ax.scatter(res['m_times'], res['P_C_analytic_marks'], marker='^', s=46, zorder=5, label="Ω milestones analytic")
-    ax.scatter(res['m_times'], res['P_C_full_marks'], marker='x', s=46, zorder=6, label="Ω milestones full")
-    ax.set_xlabel("time"); ax.set_ylabel("Probabilities (q1,q2,q3)")
-    ax.grid(True, alpha=0.3); ax.legend(ncol=2, fontsize=8, framealpha=0.8)
-    st.pyplot(fig1, clear_figure=True)
-
-# ---- Dynamics — Vector ----
-with tab_dyn_vec:
+with tab_dyn:
     t = res["times"]
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=t, y=res['P_A_eff'], mode='lines', name='P_A eff'))
@@ -337,19 +315,7 @@ with tab_dyn_vec:
                       legend_orientation='h', legend_y=1.12, margin=dict(l=10,r=10,t=10,b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-# ---- Spectrum — Matplotlib ----
-with tab_spec_mpl:
-    omega = res["omega"]; S = res["S"]
-    fig2, ax2 = plt.subplots(figsize=(6.4, 3.2))
-    if S.max() > 0: ax2.plot(omega, S/np.max(S), lw=1, label="FFT |F(ω)|² (norm)")
-    else: ax2.plot(omega, S, lw=1, label="FFT |F(ω)|²")
-    ax2.stem(res["E_est"], res["p_est"], linefmt='-', markerfmt='o', basefmt=' ', label="FFT sticks")
-    ax2.stem(res["E_true"], res["p_true"], linefmt='--', markerfmt='x', basefmt=' ', label="True sticks")
-    ax2.set_xlim(-3.0, 3.0); ax2.set_xlabel("E (ω)"); ax2.set_ylabel("p_j"); ax2.legend(); ax2.grid(True, alpha=0.3)
-    st.pyplot(fig2, clear_figure=True)
-
-# ---- Spectrum — Vector ----
-with tab_spec_vec:
+with tab_spec:
     omega = res["omega"]; S = res["S"]
     y = (S/np.max(S)) if S.max()>0 else S
     figS = go.Figure()
@@ -366,7 +332,6 @@ with tab_spec_vec:
     figS.update_xaxes(range=[-3,3])
     st.plotly_chart(figS, use_container_width=True)
 
-# ---- Lanczos ----
 with tab_lanczos:
     st.markdown("**Jacobi/Lanczos reconstruction from $(E,p)$ at anchor site**")
     st.code(res["jacobi_logs"])
@@ -374,15 +339,14 @@ with tab_lanczos:
     st.write("b =", np.round(res["jacobi_b"], 6))
     st.dataframe(pd.DataFrame(res["T"]).style.format(precision=6), use_container_width=True)
 
-# ---- Results ----
 with tab_results:
     K14,K25,K36,J12,J23 = res["params"]
     st.subheader("Parameters")
     st.write(f"K14={K14}, K25={K25}, K36={K36}, J12={J12}, J23={J23}")
-
     st.subheader("Eigenvalues and site weights (anchor site index {})".format(res["site"] if "site" in res else ""))
-    st.columns(2)[0].dataframe(pd.DataFrame({"E_true": res["E_true"], "p_true": res["p_true"]}).style.format(precision=6), use_container_width=True)
-    st.columns(2)[1].dataframe(pd.DataFrame({"E_est": res["E_est"], "p_est": res["p_est"]}).style.format(precision=6), use_container_width=True)
+    c1, c2 = st.columns(2)
+    c1.dataframe(pd.DataFrame({"E_true": res["E_true"], "p_true": res["p_true"]}).style.format(precision=6), use_container_width=True)
+    c2.dataframe(pd.DataFrame({"E_est": res["E_est"], "p_est": res["p_est"]}).style.format(precision=6), use_container_width=True)
 
     st.subheader("Sampling diagnostics")
     E_absmax = float(np.max(np.abs(res["E_true"])))
@@ -396,73 +360,4 @@ with tab_results:
     T_rayleigh = 2*np.pi/max(delta_omega_min, 1e-9)
     st.write(f"Recommended dt < π/ω_max ≈ {dt_nyq:.4f}; your dt = {res['dt']:.4f}")
     st.write(f"Recommended T ≳ 2π/Δω_min ≈ {T_rayleigh:.4f}; your T ≈ {res['tmax']:.4f}")
-
-# ---- Compare Presets ----
-with tab_compare:
-    st.markdown("Overlay **effective** $P_C(t)$ for multiple presets (fast).")
-    presets = {
-        "Case 1 (diff K, diff J)": (1.0, 1.5, 0.0, 1.0, 2.0),
-        "Case 2 (same K, same J)": (1.0, 1.0, 1.0, 1.0, 1.0),
-        "Case 3 (same K, diff J)": (0.0, 0.0, 0.0, 1.0, 1.5),
-    }
-    chosen = st.multiselect("Choose presets to overlay", list(presets.keys()), default=list(presets.keys()))
-    a_c, b_c, c_c = a, b, c  # reuse initial state and sampling
-    times = np.arange(0.0, res['tmax'] + res['dt'], res['dt'])
-
-    figC = go.Figure()
-    for name in chosen:
-        K14p,K25p,K36p,J12p,J23p = presets[name]
-        Hfull = build_H_full(K14p, K25p, K36p, J12p, J23p)
-        H1,_ = extract_1exc(Hfull); Htop,_,_ = extract_top(H1)
-        psi_top = psi0_top(a_c,b_c,c_c)
-        kets_top,_ = evolve_state_in_H(Htop, psi_top, times, hbar=hbar)
-        P_C_eff = np.abs(kets_top[:,2])**2
-        figC.add_trace(go.Scatter(x=times, y=P_C_eff, mode='lines', name=name))
-    figC.update_layout(xaxis_title="time", yaxis_title="P_C eff", margin=dict(l=10,r=10,t=10,b=10))
-    st.plotly_chart(figC, use_container_width=True)
-
-# ---- Sweep (effective-only) ----
-with tab_sweep:
-    st.markdown("Parameter sweep over $(J_{12}, J_{23})$ using **effective 3×3** dynamics (fast).")
-    colA, colB, colC = st.columns(3)
-    with colA:
-        j12_min = st.number_input("J12 min", value=0.5, step=0.1)
-        j12_max = st.number_input("J12 max", value=2.0, step=0.1)
-    with colB:
-        j23_min = st.number_input("J23 min", value=0.5, step=0.1)
-        j23_max = st.number_input("J23 max", value=2.0, step=0.1)
-    with colC:
-        nJ = st.slider("Grid size per axis", min_value=10, max_value=60, value=30, step=5)
-
-    metric = st.selectbox("Metric", ["Max P_C over 1 period", "P_C at t = π/Ω", "P_C at t = 2π/Ω"])
-    a_s, b_s, c_s = a, b, c
-    j12_vals = np.linspace(j12_min, j12_max, nJ)
-    j23_vals = np.linspace(j23_min, j23_max, nJ)
-    Z = np.zeros((nJ, nJ))
-
-    for i, J12s in enumerate(j12_vals):
-        for j, J23s in enumerate(j23_vals):
-            H_eff = np.array([[0,  J12s,   0 ],
-                              [J12s,  0,  J23s],
-                              [ 0 ,  J23s,  0]], complex)
-            psi_top = psi0_top(a_s,b_s,c_s)
-            Omega = omega_from_params(J12s, J23s, hbar=hbar)
-            # Build times for one period
-            T = 2*np.pi/Omega if Omega>0 else 1.0
-            tloc = np.linspace(0, T, 400)
-            kets,_ = evolve_state_in_H(H_eff, psi_top, tloc, hbar=hbar)
-            PC = np.abs(kets[:,2])**2
-            if metric == "Max P_C over 1 period":
-                Z[j,i] = np.max(PC)
-            elif metric == "P_C at t = π/Ω":
-                tmid = np.pi/Omega if Omega>0 else 0.0
-                Z[j,i] = np.interp(tmid, tloc, PC)
-            else:
-                Z[j,i] = PC[-1]
-
-    figH = go.Figure(data=go.Heatmap(
-        z=Z, x=np.round(j12_vals,3), y=np.round(j23_vals,3), colorscale="Viridis", colorbar=dict(title="metric")
-    ))
-    figH.update_layout(xaxis_title="J12", yaxis_title="J23", margin=dict(l=10,r=10,t=10,b=10))
-    st.plotly_chart(figH, use_container_width=True)
 
