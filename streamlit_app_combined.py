@@ -419,7 +419,7 @@ with tab_spec:
     add_stems(figS, res["E_true"], res["p_true"], "True sticks", dash="dash")
     add_stems(figS, res["E_est"],  res["p_est"],  "Recovered sticks")
     # << set x-axis window here >>
-    figS.update_xaxes(range=[-50, 50])
+    figS.update_xaxes(range=[-30, 30])
     figS.update_layout(xaxis_title="E (ω)", yaxis_title="p_j",
                        margin=dict(l=10,r=10,t=10,b=10),
                        title=f"Spectral recovery from f_ss(t) — demod shift μ={res['mu']:.6f}")
