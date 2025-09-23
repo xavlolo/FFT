@@ -252,7 +252,8 @@ def recover_K_from_blocks_with_m(a_lists, m_list):
     A = np.vstack(a_lists)      # (M, L)
     m_list = list(m_list)
     M, L = A.shape
-    S_est = float(np.mean([A[r, m] for r, m in enumerate(m_list)]))  # use a_mm
+    # Use a_mm entries to estimate S
+    S_est = float(np.mean([A[r, m] for r, m in enumerate(m_list)]))
 
     rows = []
     rhs  = []
@@ -277,6 +278,24 @@ def recover_K_from_blocks_with_m(a_lists, m_list):
 def pst_J(L, J0=1.0):
     # J_i = J0 * sqrt((i+1)*(L-(i+1))) for i=0..L-2
     return np.array([J0 * np.sqrt((i+1)*(L-(i+1))) for i in range(L-1)], float)
+
+# ===========================
+# Small parsing helpers
+# ===========================
+def parse_float_list(text: str, n: int, default_fill: float = 1.0):
+    """
+    Parse a comma/space-separated list of floats; pad/truncate to length n.
+    """
+    text = (text or "").strip()
+    if not text:
+        arr = np.array([], float)
+    else:
+        arr = np.array(text.replace(",", " ").split(), float)
+    if arr.size < n:
+        arr = np.concatenate([arr, np.full(n - arr.size, default_fill)])
+    else:
+        arr = arr[:n]
+    return arr
 
 # ===========================
 # Plot helpers (Streamlit-safe)
@@ -374,16 +393,16 @@ with st.sidebar:
         K_true = np.zeros(L, float)
         J_true = pst_J(L, J0)
     else:
-        default_K = [1.0]*L
-        default_J = [1.0]*(L-1)
-        K_true = np.array(
-            st.text_input(f"Enter K (L={L} reals, comma/space sep)", " ".join(map(str, default_K)))
-            .replace(",", " ").split(), float
-        )[:L]
-        J_true = np.array(
-            st.text_input(f"Enter J (L-1={L-1} reals, comma/space sep)", " ".join(map(str, default_J)))
-            .replace(",", " ").split(), float
-        )[:max(L-1, 0)]
+        default_K = " ".join(["1"] * L)
+        default_J = " ".join(["1"] * max(L-1, 0))
+        K_true = parse_float_list(
+            st.text_input(f"Enter K (L={L} reals, comma/space sep)", default_K),
+            n=L, default_fill=1.0
+        )
+        J_true = parse_float_list(
+            st.text_input(f"Enter J (L-1={L-1} reals, comma/space sep)", default_J),
+            n=max(L-1, 0), default_fill=1.0
+        )
 
     st.markdown("---")
     st.subheader("Initial bottom state α")
@@ -392,14 +411,19 @@ with st.sidebar:
         m0 = st.number_input("Choose bottom site m0", min_value=0, max_value=L-1, value=0, step=1)
         alpha = np.zeros(L, complex); alpha[m0] = 1.0
     else:
-        alpha_vals = np.array(
-            st.text_input(f"α (L={L} reals; imag=0 for simplicity)", "1 " + "0 "*(L-1)).split(), float
-        )[:L]
+        default_alpha = "1 " + " ".join(["0"] * (L-1))
+        alpha_vals = parse_float_list(
+            st.text_input(f"α (L={L} reals; imag=0 for simplicity)", default_alpha),
+            n=L, default_fill=0.0
+        )
         alpha = alpha_vals.astype(complex)
 
     st.markdown("---")
     st.subheader("Recovery blocks and FFT")
     m_list = st.multiselect("Choose bottom m indices", options=list(range(L)), default=list(range(min(L,3))))
+    # Guard against stale/invalid indices if L changes dynamically
+    m_list = [m for m in m_list if 0 <= m < L]
+
     clamp_axis = st.checkbox("Clamp FFT energy axis", value=True)
     if clamp_axis:
         Emin = st.number_input("E_min", value=-10.0, step=0.5)
@@ -544,6 +568,8 @@ with tabs[4]:
         st.info("Select at least one block m in the sidebar.")
     else:
         a_lists, b_lists = [], []
+        used_ms = []  # track which m actually produced valid (a,b)
+
         for m in m_list:
             f_t = return_amplitude_block_general(K_true, J_true, m, site=0, times=times)
             E_est, p_est, *_ = fft_from_timeseries(
@@ -556,21 +582,30 @@ with tabs[4]:
                 continue
             a_m, b_m, _ = jacobi_from_spectral(E_est, p_est, enforce_nonneg_b=True)
             if len(a_m) == L and len(b_m) == L-1:
-                a_lists.append(a_m); b_lists.append(b_m)
+                a_lists.append(a_m)
+                b_lists.append(b_m)
+                used_ms.append(m)
 
         if not a_lists or not b_lists:
             st.warning("Couldn’t assemble complete (a,b) for any block. Increase tmax or padding.")
         else:
             J_est, J_spread = recover_J_from_blocks(b_lists, robust="median")
-            K_est, S_est, resK = recover_K_from_blocks_with_m(a_lists, m_list)
+            K_est, S_est, resK = recover_K_from_blocks_with_m(a_lists, used_ms)  # use only successful m's
 
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**J: true vs estimated**")
-                st.dataframe(pd.DataFrame({"J_true": np.round(J_true,6), "J_est": np.round(J_est,6), "spread": np.round(J_spread,6)}))
+                st.dataframe(pd.DataFrame({
+                    "J_true": np.round(J_true,6),
+                    "J_est":  np.round(J_est,6),
+                    "spread": np.round(J_spread,6)
+                }))
             with col2:
                 st.markdown("**K: true vs estimated**")
-                st.dataframe(pd.DataFrame({"K_true": np.round(K_true,6), "K_est": np.round(K_est,6)}))
+                st.dataframe(pd.DataFrame({
+                    "K_true": np.round(K_true,6),
+                    "K_est":  np.round(K_est,6)
+                }))
                 st.caption(f"sum(K)≈{S_est:.6f}, residual {resK:.2e}")
 
 # --- Eigenvalues ---
@@ -582,7 +617,7 @@ with tabs[5]:
         rows = []
         for m in m_list:
             Hm = Heff_block_general(K_true, J_true, m)
-            evals, evecs = np.linalg.eigh(Hm)
+            evals, _ = np.linalg.eigh(Hm)
             rows.append(pd.DataFrame({"m": m, "eigval": evals}))
         if rows:
             st.dataframe(pd.concat(rows, ignore_index=True))
