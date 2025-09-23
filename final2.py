@@ -399,6 +399,91 @@ def plot_fft_panel(E_axis, S_norm, E_est, p_est, title):
     fig.tight_layout()
     return fig
 
+
+def lanczos_math_lines(E, p, prec=6, max_show=6):
+    """
+    Build LaTeX strings that show, step-by-step, how a_n and b_n are computed
+    with numeric substitution.
+
+    E, p: arrays of same length N (real); sum(p)=1 recommended.
+    prec: decimals to show
+    max_show: truncate term-by-term sums if N is large (to keep LaTeX readable)
+    """
+    E = np.asarray(E, float)
+    p = np.asarray(p, float)
+    if p.sum() <= 0:
+        return [r"\text{No positive weights }p_k."]
+    p = p / p.sum()
+    N = len(E)
+
+    h_prev = np.zeros_like(E)              # h_{-1}
+    h_curr = np.sqrt(np.clip(p, 0, None))  # h_0
+    b_prev = 0.0
+
+    def fmt(x):  # compact formatting
+        return f"{x:.{prec}f}"
+
+    # Header with inputs
+    lines = []
+    lines.append(r"\textbf{Inputs: } "
+                 + r"E=\{" + ",\,".join(fmt(x) for x in E) + r"\},\ "
+                 + r"p=\{" + ",\,".join(fmt(x) for x in p) + r"\}.")
+    lines.append(r"h_{-1}=0,\quad h_0(k)=\sqrt{p_k}=\{"
+                 + ",\,".join(fmt(x) for x in h_curr) + r"\}.")
+
+    for n in range(N):
+        # a_n = sum_k E_k h_n(k)^2
+        terms = [rf"{fmt(E[k])}\cdot({fmt(h_curr[k])})^2" for k in range(N)]
+        if N > max_show:
+            shown = " + ".join(terms[:max_show]) + r" + \cdots"
+        else:
+            shown = " + ".join(terms)
+        a_n = float(np.sum(E * (h_curr ** 2)))
+        lines.append(rf"a_{n}=\sum_k E_k\,h_{n}(k)^2 \;=\; {shown} \;=\; {fmt(a_n)}.")
+
+        # r^(n) = E*h_n - a_n*h_n - b_{n-1}*h_{n-1}
+        r = E*h_curr - a_n*h_curr - b_prev*h_prev
+        # show first few component formulas
+        comp_lines = []
+        showK = min(N, max_show)
+        for k in range(showK):
+            comp_lines.append(
+                rf"r^{{({n})}}({k})={fmt(E[k])}\cdot{fmt(h_curr[k])}"
+                rf"-{fmt(a_n)}\cdot{fmt(h_curr[k])}"
+                rf"-{fmt(b_prev)}\cdot{fmt(h_prev[k])}"
+                rf"={fmt(r[k])}"
+            )
+        r_block = r" \;,\; ".join(comp_lines)
+        if N > showK:
+            r_block += r" \;,\; \ldots"
+        lines.append(r_block)
+
+        # b_n = ||r^(n)||_2
+        if N > max_show:
+            lines.append(rf"b_{n}=\|r^{{({n})}}\|_2=\sqrt{{\sum_k (r_k)^2}} = {fmt(np.linalg.norm(r))}.")
+        else:
+            sq_terms = " + ".join(rf"({fmt(rv)})^2" for rv in r)
+            lines.append(rf"b_{n}=\|r^{{({n})}}\|_2=\sqrt{{{sq_terms}}} = {fmt(np.linalg.norm(r))}.")
+
+        # next h
+        if n < N-1 and np.linalg.norm(r) > 1e-15:
+            h_next = r / np.linalg.norm(r)
+            preview = ",\,".join(fmt(x) for x in h_next[:showK])
+            if N > showK:
+                preview += r",\,\ldots"
+            lines.append(rf"h_{{{n+1}}}=\frac{{r^{{({n})}}}}{{b_{n}}}\ \Rightarrow\ "
+                         rf"h_{{{n+1}}}(k)=\{{{preview}\}}.")
+        else:
+            h_next = h_curr
+            lines.append(rf"h_{{{n+1}}}=h_{{{n}}}\ \text{{(termination)}}.")
+
+        # shift for next step
+        h_prev, h_curr = h_curr, h_next
+        b_prev = float(np.linalg.norm(r)) if n < N-1 else 0.0
+
+    return lines
+
+
 # ===========================
 # Streamlit UI
 # ===========================
@@ -649,6 +734,11 @@ with tabs[3]:
                 \;=\;
                 \cfrac{1}{z-a_0-\cfrac{b_0^2}{z-a_1-\cfrac{b_1^2}{\ddots}}}.
                 """)
+                st.markdown("**Math derivation for $a_n$ and $b_n$ (numbers plugged into the sums)**")
+                prec_ui = st.slider(f"Precision (block m={m})", 1, 8, 4, key=f"prec_{m}")
+                for eq in lanczos_math_lines(E_est, p_est, prec=prec_ui, max_show=6):
+                    st.latex(eq)
+
 
         if dfs:
             st.markdown("**Recovered Jacobi coefficients per block**")
