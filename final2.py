@@ -381,7 +381,8 @@ st.caption("Interactively explore blocks $H_{\\mathrm{eff}}^{(m)}$, spectra, Lan
 
 with st.sidebar:
     st.header("Setup")
-    L = st.number_input("Chain length L (top & bottom)", min_value=2, max_value=10, value=6, step=1)
+    # Default L = 3 → 6 qubits total (3 top, 3 bottom)
+    L = st.number_input("Chain length L (top & bottom)", min_value=2, max_value=10, value=3, step=1)
     dt = st.number_input("Time step dt", min_value=1e-4, max_value=1.0, value=0.01, step=0.01, format="%.5f")
     tmax = st.number_input("Max time tmax (larger → sharper FFT peaks)", min_value=0.1, max_value=200.0, value=80.0, step=1.0)
     times = np.arange(0.0, tmax + dt, dt)
@@ -453,16 +454,39 @@ tabs = st.tabs(["Overview", "Hamiltonians", "Dynamics", "FFT & Lanczos", "Parame
 # --- Overview ---
 with tabs[0]:
     st.subheader("Spin chain diagram")
-    fig_diag = plot_spin_ladder(K_true, J_true, title="Spin ladder (top J, vertical K)")
+    fig_diag = plot_spin_ladder(K_true, J_true, title="Spin ladder (top J couplings, vertical K couplings)")
     st.pyplot(fig_diag)
+
+    # --- Physical Hamiltonian (LaTeX) ---
+    st.markdown("### Model Hamiltonian")
+    st.markdown("Total qubits: $2L$ (top sites $0..L-1$, bottom sites $L..2L-1$).")
+    st.latex(r"""
+    H \;=\; \sum_{i=0}^{L-2} \frac{J_i}{2}\!\left(\sigma_i^x \sigma_{i+1}^x + \sigma_i^y \sigma_{i+1}^y\right)
+          \;+\; \sum_{i=0}^{L-1} K_i \,\sigma_i^z \sigma_{L+i}^z
+    """)
+    st.caption("Top chain has nearest-neighbour XX+YY (strengths $J_i$). Each top site $i$ couples via ZZ to its bottom partner $L+i$ with strength $K_i$.")
+
+    # --- Effective block Hamiltonian (LaTeX) ---
+    st.markdown("### Effective block Hamiltonian used in FFT→Lanczos")
+    st.latex(r"""
+    H_{\mathrm{eff}}^{(m)} \;=\; \mathrm{diag}\!\left(d^{(m)}_0,\dots,d^{(m)}_{L-1}\right)
+    \;+\; \sum_{i=0}^{L-2} J_i\left(\,|i\rangle\langle i{+}1| + |i{+}1\rangle\langle i|\,\right),
+    """)
+    st.latex(r"""
+    d^{(m)}_i \;=\; \begin{cases}
+    S, & i=m,\\[2pt]
+    S - 2\big(K_i + K_m\big), & i\neq m,
+    \end{cases}
+    \qquad S \;=\; \sum_{j=0}^{L-1} K_j.
+    """)
     if use_pst:
-        st.info(f"PST preset: J_i = J0·sqrt((i+1)(L-(i+1))) with J0={J0:g}. Transfer time t_pst = π/(2J0) ≈ {np.pi/(2*J0):.4g}")
+        st.info(f"PST preset: $J_i = J_0\\sqrt{{(i+1)(L-(i+1))}}$ with $J_0={J0:g}$.  Transfer time $t_{{\\rm pst}}=\\pi/(2J_0)\\approx{np.pi/(2*J0):.4g}$")
 
     st.markdown("""
 **What this app does:**  
-1) For each selected bottom index \(m\), build the effective block \(H_{\\mathrm{eff}}^{(m)}\\in\\mathbb{R}^{L\\times L}\).  
-2) Compute the return amplitude \(f_{00}^{(m)}(t)\) at top site 0, FFT it to get candidate spectral lines \(\\{E^{(m)}, p^{(m)}\\}\).  
-3) Run **Lanczos/Stieltjes** on \(\\{E,p\\}\) to recover Jacobi coefficients \(a,b\\), from which off-diagonals \(b\) estimate **\(J\)** and diagonals \(a\) across blocks estimate **\(K\)**.
+1) For each selected bottom index \(m\), build \(H_{\\mathrm{eff}}^{(m)}\\in\\mathbb{R}^{L\\times L}\).  
+2) Compute the return amplitude \(f_{00}^{(m)}(t)\) at top site 0, FFT it to get spectral lines \(\\{E^{(m)}, p^{(m)}\\}\).  
+3) Run **Lanczos/Stieltjes** on \(\\{E,p\\}\) to recover Jacobi \(a,b\\); use \(b\\) to estimate **\(J\)** and cross-block \(a\\) to estimate **\(K\)**.
 """)
 
 # --- Hamiltonians ---
