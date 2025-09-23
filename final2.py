@@ -327,7 +327,7 @@ def plot_top_populations_all(K, J, alpha, times, hbar=1.0, title="Top-site occup
     psiA = np.zeros(L, complex); psiA[0] = 1.0
     for m in range(L):
         w = float(np.abs(alpha[m])**2)
-        if w == 0: 
+        if w == 0:
             continue
         Hm = Heff_block_general(K, J, m)
         kets_m, _ = evolve_state_in_H(Hm, psiA, times, hbar=hbar)
@@ -376,8 +376,14 @@ with st.sidebar:
     else:
         default_K = [1.0]*L
         default_J = [1.0]*(L-1)
-        K_true = np.array(st.text_input(f"Enter K (L={L} reals, comma/space sep)", " ".join(map(str, default_K))).replace(",", " ").split(), float)[:L]
-        J_true = np.array(st.text_input(f"Enter J (L-1={L-1} reals, comma/space sep)", " ".join(map(str, default_J))).replace(",", " ").split(), float)[:max(L-1,0)]
+        K_true = np.array(
+            st.text_input(f"Enter K (L={L} reals, comma/space sep)", " ".join(map(str, default_K)))
+            .replace(",", " ").split(), float
+        )[:L]
+        J_true = np.array(
+            st.text_input(f"Enter J (L-1={L-1} reals, comma/space sep)", " ".join(map(str, default_J)))
+            .replace(",", " ").split(), float
+        )[:max(L-1, 0)]
 
     st.markdown("---")
     st.subheader("Initial bottom state α")
@@ -386,7 +392,9 @@ with st.sidebar:
         m0 = st.number_input("Choose bottom site m0", min_value=0, max_value=L-1, value=0, step=1)
         alpha = np.zeros(L, complex); alpha[m0] = 1.0
     else:
-        alpha_vals = np.array(st.text_input(f"α (L={L} reals; imag=0 for simplicity)", "1 " + "0 "*(L-1)).split(), float)[:L]
+        alpha_vals = np.array(
+            st.text_input(f"α (L={L} reals; imag=0 for simplicity)", "1 " + "0 "*(L-1)).split(), float
+        )[:L]
         alpha = alpha_vals.astype(complex)
 
     st.markdown("---")
@@ -430,7 +438,7 @@ with tabs[0]:
 **What this app does:**  
 1) For each selected bottom index \(m\), build the effective block \(H_{\\mathrm{eff}}^{(m)}\\in\\mathbb{R}^{L\\times L}\).  
 2) Compute the return amplitude \(f_{00}^{(m)}(t)\) at top site 0, FFT it to get candidate spectral lines \(\\{E^{(m)}, p^{(m)}\\}\).  
-3) Run **Lanczos/Stieltjes** on \(\\{E,p\\}\) to recover Jacobi coefficients \(a,b\\), from which off-diagonals \(b\\) estimate **\(J\)** and diagonals \(a\\) across blocks estimate **\(K\)**.
+3) Run **Lanczos/Stieltjes** on \(\\{E,p\\}\) to recover Jacobi coefficients \(a,b\\), from which off-diagonals \(b\) estimate **\(J\)** and diagonals \(a\) across blocks estimate **\(K\)**.
 """)
 
 # --- Hamiltonians ---
@@ -469,35 +477,52 @@ with tabs[3]:
     else:
         dfs = []
         for m in m_list:
+            # 1) time signal
             f_t = return_amplitude_block_general(K_true, J_true, m, site=0, times=times)
+
+            # 2) FFT → (E_est, p_est)
             E_est, p_est, E_axis, S_norm = fft_from_timeseries(
                 f_t, times,
                 n_levels=n_levels_fft, pad_factor=pad_factor,
                 use_hann=True, include_dc=include_dc, guard_mult=guard_mult,
                 post_prune=True, min_weight=min_weight, keep_top=n_levels_fft
             )
+
+            # 3) Plot FFT panel
             title = f"FFT return at top site 0 | bottom m={m}"
             fig_fft = plot_fft_panel(E_axis, S_norm, E_est, p_est, title)
-            if xlim is not None: plt.xlim(*xlim)
+            if xlim is not None:
+                ax = fig_fft.axes[0]
+                ax.set_xlim(*xlim)
             st.pyplot(fig_fft)
 
+            # 4) Skip if no peaks
             if E_est.size == 0:
                 st.warning(f"No peaks found for m={m}. Increase tmax or pad_factor.")
                 continue
 
+            # 5) Lanczos on (E,p)
             a_m, b_m, _ = jacobi_from_spectral(E_est, p_est, enforce_nonneg_b=True, verbose=False)
+
+            # 6) Build a same-length table: a has length L, b has length L-1 → pad b to L
+            a_col = np.concatenate([np.round(a_m, 10), np.full(L - len(a_m), np.nan)])
+            b_col = np.concatenate([np.round(b_m, 10), np.full(L - len(b_m), np.nan)])  # pad to L
+
             df = pd.DataFrame({
-                "m": m,
-                "a_n": list(np.round(a_m, 10)) + [np.nan]*(L - len(a_m)),
-                "b_n": list(np.round(b_m, 10)) + [np.nan]*(L-1 - len(b_m))
+                "m": np.full(L, m),
+                "n": np.arange(L),
+                "a_n": a_col,
+                "b_n": b_col,  # last row will be NaN since b has only L-1 entries
             })
             dfs.append(df)
 
+        # Show combined table if any block succeeded
         if dfs:
             st.markdown("**Recovered Jacobi coefficients per block**")
             st.dataframe(pd.concat(dfs, ignore_index=True))
 
-        if enable_verbose and len(m_list) > 0:
+        # Optional verbose Lanczos log
+        if enable_verbose and m_list:
             st.markdown("---")
             st.subheader(f"Verbose Lanczos log (m={m_dbg})")
             f_t = return_amplitude_block_general(K_true, J_true, m_dbg, site=0, times=times)
@@ -527,7 +552,7 @@ with tabs[4]:
                 use_hann=True, include_dc=include_dc, guard_mult=guard_mult,
                 post_prune=True, min_weight=min_weight, keep_top=n_levels_fft
             )
-            if E_est.size == 0: 
+            if E_est.size == 0:
                 continue
             a_m, b_m, _ = jacobi_from_spectral(E_est, p_est, enforce_nonneg_b=True)
             if len(a_m) == L and len(b_m) == L-1:
