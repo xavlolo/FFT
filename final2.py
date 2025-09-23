@@ -194,12 +194,23 @@ def fft_from_timeseries(
     return E_hat[order], p[order], -omega, S_norm
 
 # ===========================
-# Lanczos (Stieltjes) recovery
+# Lanczos (Stieltjes) recovery (detailed)
 # ===========================
-def jacobi_from_spectral(E, p, enforce_nonneg_b=True, verbose=False, fmt=6, label=""):
+def build_tridiagonal(a, b):
+    a = np.asarray(a, float)
+    b = np.asarray(b, float)
+    N = len(a)
+    T = np.zeros((N, N), float)
+    np.fill_diagonal(T, a)
+    for i in range(N - 1):
+        T[i, i + 1] = T[i + 1, i] = b[i]
+    return T
+
+def lanczos_detailed(E, p, enforce_nonneg_b=True):
     """
-    Recover Jacobi coefficients (a,b) from spectral lines (E, p).
-    Returns: a (len N), b (len N-1)
+    Detailed Lanczos on discrete spectrum (E, p).
+    Returns:
+      a, b, steps_df, T, G, evals_T, weights_from_T
     """
     E = np.asarray(E, float)
     p = np.asarray(p, float)
@@ -208,36 +219,57 @@ def jacobi_from_spectral(E, p, enforce_nonneg_b=True, verbose=False, fmt=6, labe
     p = p / p.sum()
     N = len(E)
 
-    h_prev = np.zeros_like(E)         # h_-1
+    # init
+    h_prev = np.zeros_like(E)              # h_-1
     h_curr = np.sqrt(np.clip(p, 0, None))  # h_0
-    delta_prev = 0.0
-    a, b = [], []
-    log_lines = []
-    if verbose:
-        hdr = f"[Lanczos{' ' + label if label else ''}]"
-        log_lines.append(f"{hdr} Start")
-        for k in range(N):
-            log_lines.append(f"{hdr}   k={k}: E={E[k]:.{fmt}f}, p={p[k]:.{fmt}f}")
+    b_prev = 0.0
 
+    steps = []
+    hs = []  # store h_n vectors
+
+    a_list, b_list = [], []
     for n in range(N):
-        an = float(np.sum(E * h_curr**2))
-        a.append(an)
-        r = E*h_curr - an*h_curr - delta_prev*h_prev
-        if n < N-1:
-            bn = float(np.linalg.norm(r))
-            b.append(abs(bn) if enforce_nonneg_b else bn)
-            h_next = r / (bn if bn > 1e-15 else 1.0)
+        # a_n
+        a_n = float(np.sum(E * (h_curr ** 2)))
+        # residual
+        r = E * h_curr - a_n * h_curr - b_prev * h_prev
+        # b_n
+        if n < N - 1:
+            b_n = float(np.linalg.norm(r))
+            b_list.append(abs(b_n) if enforce_nonneg_b else b_n)
+            h_next = r / (b_n if b_n > 1e-15 else 1.0)
         else:
+            b_n = 0.0
             h_next = h_curr
-        if verbose:
-            log_lines.append(f"[Lanczos] n={n}: a[{n}]={an:.{fmt}f}" +
-                             ("" if n == 0 else f", uses b[{n-1}]={delta_prev:.{fmt}f}"))
-        h_prev, h_curr = h_curr, h_next
-        delta_prev = b[-1] if n < N-1 else 0.0
 
-    if verbose:
-        log_lines.append(f"[Lanczos] Done. a={np.round(a, fmt)}, b={np.round(b, fmt)}")
-    return np.array(a), np.array(b), "\n".join(log_lines)
+        # record
+        preview = np.array2string(np.real(h_curr[:min(5, N)]), precision=6, suppress_small=True)
+        steps.append(dict(
+            n=n, a_n=a_n, b_prev=b_prev if n > 0 else 0.0, b_n=b_n,
+            h_preview=preview
+        ))
+        hs.append(h_curr.copy())
+        a_list.append(a_n)
+
+        # shift
+        h_prev, h_curr = h_curr, h_next
+        b_prev = b_list[-1] if n < N - 1 else 0.0
+
+    # assemble outputs
+    a = np.array(a_list, float)
+    b = np.array(b_list, float)
+    steps_df = pd.DataFrame(steps)
+
+    # matrices
+    T = build_tridiagonal(a, b)
+    H = np.column_stack(hs)  # (N x N)
+    G = H.T @ H              # should be I
+
+    # eigen check
+    evals_T, Q = np.linalg.eigh(T)
+    weights_from_T = (Q[0, :] ** 2)
+
+    return a, b, steps_df, T, G, evals_T, weights_from_T
 
 # ===========================
 # Parameter recovery
@@ -252,8 +284,7 @@ def recover_K_from_blocks_with_m(a_lists, m_list):
     A = np.vstack(a_lists)      # (M, L)
     m_list = list(m_list)
     M, L = A.shape
-    # Use a_mm entries to estimate S
-    S_est = float(np.mean([A[r, m] for r, m in enumerate(m_list)]))
+    S_est = float(np.mean([A[r, m] for r, m in enumerate(m_list)]))  # use a_mm
 
     rows = []
     rhs  = []
@@ -308,22 +339,17 @@ def plot_spin_ladder(K, J, title="Spin ladder diagram"):
     xs = np.arange(L)
 
     fig, ax = plt.subplots(figsize=(7, 2.6))
-    # nodes
     ax.scatter(xs, [y_top]*L, s=80)
     ax.scatter(xs, [y_bot]*L, s=80)
-    # top edges (J)
     for i in range(L-1):
         ax.plot([xs[i], xs[i+1]], [y_top, y_top])
         ax.text((xs[i]+xs[i+1])/2, y_top+0.05, f"J{i}={J[i]:.3g}", ha='center', fontsize=8)
-    # vertical edges (K)
     for i in range(L):
         ax.plot([xs[i], xs[i]], [y_bot, y_top])
         ax.text(xs[i], 0.5, f"K{i}={K[i]:.3g}", ha='center', va='center', fontsize=8, rotation=90)
     ax.set_yticks([y_bot, y_top]); ax.set_yticklabels(["bottom", "top"])
     ax.set_xticks(xs); ax.set_xlim(-0.5, L-0.5)
     ax.set_title(title); ax.set_frame_on(False)
-    ax.get_yaxis().set_visible(True)
-    ax.get_xaxis().set_visible(True)
     plt.tight_layout()
     return fig
 
@@ -352,7 +378,6 @@ def plot_top_populations_all(K, J, alpha, times, hbar=1.0, title="Top-site occup
         kets_m, _ = evolve_state_in_H(Hm, psiA, times, hbar=hbar)
         for i in range(L):
             P_top[i] += w * (np.abs(kets_m[:, i])**2)
-    # plot
     fig, ax = plt.subplots(figsize=(7.6, 4.0))
     for i in range(L):
         lab = f"top {i}" if L > 3 else ["$P_A$","$P_B$","$P_C$"][i] if i < 3 else f"top {i}"
@@ -422,7 +447,6 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Recovery blocks and FFT")
     m_list = st.multiselect("Choose bottom m indices", options=list(range(L)), default=list(range(min(L,3))))
-    # Guard against stale/invalid indices if L changes dynamically
     m_list = [m for m in m_list if 0 <= m < L]
 
     clamp_axis = st.checkbox("Clamp FFT energy axis", value=True)
@@ -483,7 +507,7 @@ with tabs[0]:
         st.info(f"PST preset: $J_i = J_0\\sqrt{{(i+1)(L-(i+1))}}$ with $J_0={J0:g}$.  Transfer time $t_{{\\rm pst}}=\\pi/(2J_0)\\approx{np.pi/(2*J0):.4g}$")
 
     st.markdown("""
-**What this app does:**  
+**Pipeline:**  
 1) For each selected bottom index \(m\), build \(H_{\\mathrm{eff}}^{(m)}\\in\\mathbb{R}^{L\\times L}\).  
 2) Compute the return amplitude \(f_{00}^{(m)}(t)\) at top site 0, FFT it to get spectral lines \(\\{E^{(m)}, p^{(m)}\\}\).  
 3) Run **Lanczos/Stieltjes** on \(\\{E,p\\}\) to recover Jacobi \(a,b\\); use \(b\\) to estimate **\(J\)** and cross-block \(a\\) to estimate **\(K\)**.
@@ -492,18 +516,15 @@ with tabs[0]:
 # --- Hamiltonians ---
 with tabs[1]:
     cols = st.columns(3)
-    # Single block heatmap
     with cols[0]:
         st.markdown("**Single block**")
         m_for_block = st.number_input("Block m for heatmap", min_value=0, max_value=L-1, value=0, step=1, key="blk")
         Hm = Heff_block_general(K_true, J_true, m_for_block)
         st.pyplot(plot_matrix_abs(Hm, f"|H_eff^(m={m_for_block})|", "top index", "top index"))
-    # Block-diagonal top-bottom subspace
     with cols[1]:
         st.markdown("**Top–bottom subspace (block-diagonal)**")
         Htb = build_H_topbottom_blockdiag(K_true, J_true)
         st.pyplot(plot_matrix_abs(Htb, f"|H_top-bottom| (L^2×L^2)", "index", "index", figsize=(5.6,5.2)))
-    # Full H (only if small)
     with cols[2]:
         st.markdown("**Full H (2^(2L)×2^(2L))**")
         if L <= 3:
@@ -540,8 +561,7 @@ with tabs[3]:
             title = f"FFT return at top site 0 | bottom m={m}"
             fig_fft = plot_fft_panel(E_axis, S_norm, E_est, p_est, title)
             if xlim is not None:
-                ax = fig_fft.axes[0]
-                ax.set_xlim(*xlim)
+                ax = fig_fft.axes[0]; ax.set_xlim(*xlim)
             st.pyplot(fig_fft)
 
             # 4) Skip if no peaks
@@ -549,72 +569,137 @@ with tabs[3]:
                 st.warning(f"No peaks found for m={m}. Increase tmax or pad_factor.")
                 continue
 
-            # 5) Lanczos on (E,p)
-            a_m, b_m, _ = jacobi_from_spectral(E_est, p_est, enforce_nonneg_b=True, verbose=False)
+            # 5) Lanczos on (E,p) for J/K recovery summary table
+            a_m, b_m, _, T_dummy, _, _, _ = lanczos_detailed(E_est, p_est, enforce_nonneg_b=True)
 
             # 6) Build a same-length table: a has length L, b has length L-1 → pad b to L
             a_col = np.concatenate([np.round(a_m, 10), np.full(L - len(a_m), np.nan)])
             b_col = np.concatenate([np.round(b_m, 10), np.full(L - len(b_m), np.nan)])  # pad to L
-
-            df = pd.DataFrame({
-                "m": np.full(L, m),
-                "n": np.arange(L),
-                "a_n": a_col,
-                "b_n": b_col,  # last row will be NaN since b has only L-1 entries
-            })
+            df = pd.DataFrame({"m": np.full(L, m), "n": np.arange(L), "a_n": a_col, "b_n": b_col})
             dfs.append(df)
+
+            # --- NEW: Detailed Lanczos expander ---
+            with st.expander(f"Lanczos details for m={m}", expanded=False):
+                a, b, steps_df, T, G, evals_T, weights_T = lanczos_detailed(E_est, p_est, enforce_nonneg_b=True)
+
+                st.markdown("**Step-by-step iterations**")
+                st.dataframe(steps_df.style.format(precision=6), use_container_width=True)
+
+                st.markdown("**Jacobi (tridiagonal) matrix $T$**")
+                dfT = pd.DataFrame(np.round(T, 10))
+                st.dataframe(dfT, use_container_width=True)
+                st.download_button(
+                    "Download T as CSV",
+                    data=dfT.to_csv(index=False).encode("utf-8"),
+                    file_name=f"T_m{m}.csv",
+                    mime="text/csv",
+                )
+
+                st.markdown("**Orthonormality check**: $G = H^\\top H$ (should be $I$)")
+                figG, axG = plt.subplots(figsize=(4.2, 3.6))
+                im = axG.imshow(G)
+                axG.set_title("Inner products of h_n")
+                figG.colorbar(im, ax=axG, fraction=0.046, pad=0.04)
+                figG.tight_layout()
+                st.pyplot(figG)
+
+                st.markdown("**Consistency check** (eigs of $T$ vs FFT sticks)")
+                comp_df = pd.DataFrame({
+                    "E_from_FFT": np.round(E_est, 10),
+                    "p_from_FFT": np.round(p_est, 10),
+                    "E_from_T":   np.round(evals_T, 10),
+                    "p_from_T":   np.round(weights_T, 10),
+                })
+                st.dataframe(comp_df, use_container_width=True)
+
+                # Overlay sticks
+                figS, axS = plt.subplots(figsize=(6.6, 3.4))
+                axS.stem(E_est, p_est, linefmt='-', markerfmt='o', basefmt=' ', label="FFT sticks")
+                axS.stem(evals_T, weights_T, linefmt='--', markerfmt='s', basefmt=' ', label="From T")
+                axS.set_xlabel("Energy E"); axS.set_ylabel("weight")
+                axS.set_title("Spectrum: FFT vs Jacobi-matrix reconstruction")
+                axS.grid(alpha=0.25); axS.legend()
+                figS.tight_layout()
+                st.pyplot(figS)
+
+                st.markdown("**Lanczos math**")
+                st.latex(r"""
+                \text{Init:}\quad h_{-1}=0,\qquad h_0(k)=\sqrt{p_k}.
+                """)
+                st.latex(r"""
+                a_n \;=\; \sum_k E_k\,h_n(k)^2,\qquad
+                r^{(n)} \;=\; E\,h_n - a_n h_n - b_{n-1}h_{n-1},\qquad
+                b_n \;=\; \|r^{(n)}\|_2,\qquad
+                h_{n+1} \;=\; \frac{r^{(n)}}{b_n}.
+                """)
+                st.latex(r"""
+                T \;=\;
+                \begin{pmatrix}
+                a_0 & b_0 & 0   & \cdots & 0 \\
+                b_0 & a_1 & b_1 & \ddots & \vdots \\
+                0   & b_1 & a_2 & \ddots & 0 \\
+                \vdots & \ddots & \ddots & \ddots & b_{N-2}\\
+                0 & \cdots & 0 & b_{N-2} & a_{N-1}
+                \end{pmatrix},\quad
+                G_{00}(z)=\sum_k \frac{p_k}{z-E_k}
+                \;=\;
+                \cfrac{1}{z-a_0-\cfrac{b_0^2}{z-a_1-\cfrac{b_1^2}{\ddots}}}.
+                """)
 
         # Show combined table if any block succeeded
         if dfs:
             st.markdown("**Recovered Jacobi coefficients per block**")
             st.dataframe(pd.concat(dfs, ignore_index=True))
 
-        # Optional verbose Lanczos log
+        # Optional verbose plain-text log (original style)
         if enable_verbose and m_list:
             st.markdown("---")
             st.subheader(f"Verbose Lanczos log (m={m_dbg})")
             f_t = return_amplitude_block_general(K_true, J_true, m_dbg, site=0, times=times)
             E_est, p_est, *_ = fft_from_timeseries(
-                f_t, times,
-                n_levels=n_levels_fft, pad_factor=pad_factor,
+                f_t, times, n_levels=n_levels_fft, pad_factor=pad_factor,
                 use_hann=True, include_dc=include_dc, guard_mult=guard_mult,
                 post_prune=True, min_weight=min_weight, keep_top=n_levels_fft
             )
             if E_est.size == 0:
                 st.warning("No peaks for verbose block; adjust tmax/padding.")
             else:
-                a_v, b_v, log_text = jacobi_from_spectral(E_est, p_est, verbose=True, fmt=decimals, label=f"m={m_dbg}, site=0")
-                st.code(log_text, language="text")
+                # Reconstruct the classic text log using the detailed steps
+                a, b, steps_df, *_ = lanczos_detailed(E_est, p_est, enforce_nonneg_b=True)
+                lines = []
+                for _, row in steps_df.iterrows():
+                    n = int(row["n"])
+                    lines.append(
+                        f"[Lanczos] n={n}: a[{n}]={row['a_n']:.{decimals}f}"
+                        + ("" if n == 0 else f", uses b[{n-1}]={row['b_prev']:.{decimals}f}")
+                    )
+                lines.append(f"[Lanczos] Done. a={np.round(a, decimals)}, b={np.round(b, decimals)}")
+                st.code("\n".join(lines), language="text")
 
 # --- Parameter recovery ---
 with tabs[4]:
     if not m_list:
         st.info("Select at least one block m in the sidebar.")
     else:
-        a_lists, b_lists = [], []
-        used_ms = []  # track which m actually produced valid (a,b)
-
+        a_lists, b_lists, used_ms = [], [], []
         for m in m_list:
             f_t = return_amplitude_block_general(K_true, J_true, m, site=0, times=times)
             E_est, p_est, *_ = fft_from_timeseries(
-                f_t, times,
-                n_levels=n_levels_fft, pad_factor=pad_factor,
+                f_t, times, n_levels=n_levels_fft, pad_factor=pad_factor,
                 use_hann=True, include_dc=include_dc, guard_mult=guard_mult,
                 post_prune=True, min_weight=min_weight, keep_top=n_levels_fft
             )
             if E_est.size == 0:
                 continue
-            a_m, b_m, _ = jacobi_from_spectral(E_est, p_est, enforce_nonneg_b=True)
+            a_m, b_m, _, *_ = lanczos_detailed(E_est, p_est, enforce_nonneg_b=True)
             if len(a_m) == L and len(b_m) == L-1:
-                a_lists.append(a_m)
-                b_lists.append(b_m)
-                used_ms.append(m)
+                a_lists.append(a_m); b_lists.append(b_m); used_ms.append(m)
 
         if not a_lists or not b_lists:
             st.warning("Couldn’t assemble complete (a,b) for any block. Increase tmax or padding.")
         else:
             J_est, J_spread = recover_J_from_blocks(b_lists, robust="median")
-            K_est, S_est, resK = recover_K_from_blocks_with_m(a_lists, used_ms)  # use only successful m's
+            K_est, S_est, resK = recover_K_from_blocks_with_m(a_lists, used_ms)
 
             col1, col2 = st.columns(2)
             with col1:
