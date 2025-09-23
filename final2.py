@@ -125,21 +125,15 @@ def fft_from_timeseries(
     keep_top=None,
     guard_mult=1.2,
 ):
-    """
-    Estimate discrete spectral lines E_k and nonnegative weights p_k from a return amplitude f(t).
-    We use FFT to find candidate peaks at angular frequencies ω, then set E = -ω
-    because f(t) ≈ Σ p_k e^{-i E_k t} with p_k ≥ 0 for return amplitudes.
-    """
     times = np.asarray(times, float)
     f_t = np.asarray(f_t)
-
     if times.ndim != 1 or times.size < 2:
-        raise ValueError("`times` must be a 1D array with length >= 2.")
+        raise ValueError("`times` must be 1D with length >= 2.")
     if f_t.shape[0] != times.shape[0]:
         raise ValueError("`f_t` and `times` must have the same length.")
     dts = np.diff(times)
     if not np.allclose(dts, dts[0]):
-        raise ValueError("`times` must be uniformly spaced for FFT-based estimation.")
+        raise ValueError("`times` must be uniformly spaced.")
     dt = float(dts[0])
 
     win = np.hanning(len(f_t)) if use_hann else np.ones_like(f_t)
@@ -194,7 +188,7 @@ def fft_from_timeseries(
     return E_hat[order], p[order], -omega, S_norm
 
 # ===========================
-# Lanczos (Stieltjes) recovery (detailed)
+# Lanczos (detailed) + T
 # ===========================
 def build_tridiagonal(a, b):
     a = np.asarray(a, float)
@@ -207,11 +201,6 @@ def build_tridiagonal(a, b):
     return T
 
 def lanczos_detailed(E, p, enforce_nonneg_b=True):
-    """
-    Detailed Lanczos on discrete spectrum (E, p).
-    Returns:
-      a, b, steps_df, T, G, evals_T, weights_from_T
-    """
     E = np.asarray(E, float)
     p = np.asarray(p, float)
     if p.sum() <= 0:
@@ -219,21 +208,16 @@ def lanczos_detailed(E, p, enforce_nonneg_b=True):
     p = p / p.sum()
     N = len(E)
 
-    # init
     h_prev = np.zeros_like(E)              # h_-1
     h_curr = np.sqrt(np.clip(p, 0, None))  # h_0
     b_prev = 0.0
 
     steps = []
-    hs = []  # store h_n vectors
-
+    hs = []
     a_list, b_list = [], []
     for n in range(N):
-        # a_n
         a_n = float(np.sum(E * (h_curr ** 2)))
-        # residual
         r = E * h_curr - a_n * h_curr - b_prev * h_prev
-        # b_n
         if n < N - 1:
             b_n = float(np.linalg.norm(r))
             b_list.append(abs(b_n) if enforce_nonneg_b else b_n)
@@ -242,63 +226,48 @@ def lanczos_detailed(E, p, enforce_nonneg_b=True):
             b_n = 0.0
             h_next = h_curr
 
-        # record
         preview = np.array2string(np.real(h_curr[:min(5, N)]), precision=6, suppress_small=True)
-        steps.append(dict(
-            n=n, a_n=a_n, b_prev=b_prev if n > 0 else 0.0, b_n=b_n,
-            h_preview=preview
-        ))
+        steps.append(dict(n=n, a_n=a_n, b_prev=b_prev if n > 0 else 0.0, b_n=b_n, h_preview=preview))
         hs.append(h_curr.copy())
         a_list.append(a_n)
 
-        # shift
         h_prev, h_curr = h_curr, h_next
         b_prev = b_list[-1] if n < N - 1 else 0.0
 
-    # assemble outputs
     a = np.array(a_list, float)
     b = np.array(b_list, float)
     steps_df = pd.DataFrame(steps)
 
-    # matrices
     T = build_tridiagonal(a, b)
-    H = np.column_stack(hs)  # (N x N)
-    G = H.T @ H              # should be I
-
-    # eigen check
+    H = np.column_stack(hs)
+    G = H.T @ H
     evals_T, Q = np.linalg.eigh(T)
     weights_from_T = (Q[0, :] ** 2)
-
     return a, b, steps_df, T, G, evals_T, weights_from_T
 
 # ===========================
 # Parameter recovery
 # ===========================
 def recover_J_from_blocks(b_lists, robust="median"):
-    B = np.vstack(b_lists)  # (#m, L-1)
+    B = np.vstack(b_lists)
     J_est = np.median(B, axis=0) if robust == "median" else np.mean(B, axis=0)
     spread = np.std(B, axis=0)
     return J_est, spread
 
 def recover_K_from_blocks_with_m(a_lists, m_list):
-    A = np.vstack(a_lists)      # (M, L)
+    A = np.vstack(a_lists)
     m_list = list(m_list)
     M, L = A.shape
-    S_est = float(np.mean([A[r, m] for r, m in enumerate(m_list)]))  # use a_mm
-
-    rows = []
-    rhs  = []
+    S_est = float(np.mean([A[r, m] for r, m in enumerate(m_list)]))
+    rows, rhs = [], []
     for r, m in enumerate(m_list):
         for i in range(L):
-            if i == m:
-                continue
+            if i == m: continue
             row = np.zeros(L, float); row[i] = 1.0; row[m] = 1.0
             c_im = 0.5 * (S_est - A[r, i])
             rows.append(row); rhs.append(c_im)
-    rows.append(np.ones(L, float)); rhs.append(S_est)  # sum constraint
-
-    Msys = np.vstack(rows)
-    bsys = np.asarray(rhs, float)
+    rows.append(np.ones(L, float)); rhs.append(S_est)
+    Msys = np.vstack(rows); bsys = np.asarray(rhs, float)
     K_est, *_ = np.linalg.lstsq(Msys, bsys, rcond=None)
     residual = float(np.linalg.norm(Msys @ K_est - bsys))
     return K_est, S_est, residual
@@ -307,16 +276,12 @@ def recover_K_from_blocks_with_m(a_lists, m_list):
 # PST preset
 # ===========================
 def pst_J(L, J0=1.0):
-    # J_i = J0 * sqrt((i+1)*(L-(i+1))) for i=0..L-2
     return np.array([J0 * np.sqrt((i+1)*(L-(i+1))) for i in range(L-1)], float)
 
 # ===========================
-# Small parsing helpers
+# Parsing + display helpers
 # ===========================
 def parse_float_list(text: str, n: int, default_fill: float = 1.0):
-    """
-    Parse a comma/space-separated list of floats; pad/truncate to length n.
-    """
     text = (text or "").strip()
     if not text:
         arr = np.array([], float)
@@ -328,16 +293,54 @@ def parse_float_list(text: str, n: int, default_fill: float = 1.0):
         arr = arr[:n]
     return arr
 
+def parse_complex_list(text: str, n: int, default_fill: complex = 0.0+0.0j):
+    """Accept tokens like 0.5, 0.5+0.5i, 1j, -i; commas/spaces; pads/truncates to n."""
+    txt = (text or "").strip()
+    if not txt:
+        arr = np.array([], complex)
+    else:
+        # normalize forms: allow 'i' as imaginary unit and Unicode minus
+        norm = txt.replace("i", "j").replace("−", "-")
+        tokens = norm.replace(",", " ").split()
+        vals = []
+        for t in tokens:
+            try:
+                vals.append(complex(t))
+            except Exception:
+                # last resort: strip spaces inside e.g. "0.5 + 0.5j"
+                vals.append(complex(t.replace(" ", "")))
+        arr = np.array(vals, complex)
+    if arr.size < n:
+        arr = np.concatenate([arr, np.full(n - arr.size, default_fill, dtype=complex)])
+    else:
+        arr = arr[:n]
+    return arr
+
+def format_bitstring(bits):
+    return "".join("1" if b else "0" for b in bits)
+
+def expanded_state_terms(L, alpha):
+    """Return list of (coef, six_bit_string) terms for L<=3 with top excitation at 0."""
+    if L > 3:
+        return []
+    terms = []
+    for m, amp in enumerate(alpha):
+        if np.abs(amp) < 1e-12:
+            continue
+        bits = [0]*(2*L)
+        bits[0] = 1          # top site 0 excited
+        bits[L + m] = 1      # bottom site m excited
+        terms.append((amp, format_bitstring(bits)))
+    return terms
+
 # ===========================
 # Plot helpers (Streamlit-safe)
 # ===========================
 def plot_spin_ladder(K, J, title="Spin ladder diagram"):
-    """Schematic: top and bottom chains with vertical K_i and top J_i edges."""
     K = np.asarray(K, float); J = np.asarray(J, float)
     L = len(K)
     y_top, y_bot = 1.0, 0.0
     xs = np.arange(L)
-
     fig, ax = plt.subplots(figsize=(7, 2.6))
     ax.scatter(xs, [y_top]*L, s=80)
     ax.scatter(xs, [y_bot]*L, s=80)
@@ -372,8 +375,7 @@ def plot_top_populations_all(K, J, alpha, times, hbar=1.0, title="Top-site occup
     psiA = np.zeros(L, complex); psiA[0] = 1.0
     for m in range(L):
         w = float(np.abs(alpha[m])**2)
-        if w == 0:
-            continue
+        if w == 0: continue
         Hm = Heff_block_general(K, J, m)
         kets_m, _ = evolve_state_in_H(Hm, psiA, times, hbar=hbar)
         for i in range(L):
@@ -392,7 +394,7 @@ def plot_fft_panel(E_axis, S_norm, E_est, p_est, title):
     ax.plot(E_axis, S_norm, lw=1.0, label="FFT |F|^2 (norm)")
     if E_est.size:
         ax.stem(E_est, p_est, linefmt='-', markerfmt='o', basefmt=' ', label="Recovered sticks")
-    ax.set_xlabel("Energy E"); ax.set_ylabel("normalized power / p_j")
+    ax.set_xlabel("Energy E"); ax.set_ylabel("normalized weight / p_j")
     ax.set_title(title); ax.grid(alpha=0.25); ax.legend()
     fig.tight_layout()
     return fig
@@ -431,18 +433,33 @@ with st.sidebar:
         )
 
     st.markdown("---")
-    st.subheader("Initial bottom state α")
-    use_single = st.checkbox("Single bottom site (α=1 at one m, others 0)", value=True)
-    if use_single:
+    st.subheader("Bottom initial state α (complex)")
+    bottom_mode = st.radio(
+        "Choose how to set the bottom excitation",
+        ["Single site m0", "Custom amplitudes a,b,c,… (complex)"],
+        index=0
+    )
+    if bottom_mode == "Single site m0":
         m0 = st.number_input("Choose bottom site m0", min_value=0, max_value=L-1, value=0, step=1)
         alpha = np.zeros(L, complex); alpha[m0] = 1.0
     else:
-        default_alpha = "1 " + " ".join(["0"] * (L-1))
-        alpha_vals = parse_float_list(
-            st.text_input(f"α (L={L} reals; imag=0 for simplicity)", default_alpha),
-            n=L, default_fill=0.0
+        example = "1, 0, 0" if L == 3 else ("1, " + ", ".join(["0"]*(L-1)))
+        txt = st.text_input(
+            f"Enter α as comma/space separated complex numbers (length L={L}). "
+            "You may use i or j for √−1 (examples: 1, 0.5+0.5i, -i).",
+            example
         )
-        alpha = alpha_vals.astype(complex)
+        alpha_raw = parse_complex_list(txt, n=L, default_fill=0.0+0.0j)
+        norm = np.linalg.norm(alpha_raw)
+        if norm == 0:
+            st.warning("All-zero amplitudes — defaulting to α = (1, 0, …, 0).")
+            alpha = np.zeros(L, complex); alpha[0] = 1.0
+        else:
+            alpha = alpha_raw / norm
+        st.caption(f"Normalized ||α||₂ = 1 (original norm was {norm:.6g}).")
+
+    # Show α table
+    st.dataframe(pd.DataFrame({"m": np.arange(L), "α_m": alpha}), use_container_width=True)
 
     st.markdown("---")
     st.subheader("Recovery blocks and FFT")
@@ -478,10 +495,8 @@ tabs = st.tabs(["Overview", "Hamiltonians", "Dynamics", "FFT & Lanczos", "Parame
 # --- Overview ---
 with tabs[0]:
     st.subheader("Spin chain diagram")
-    fig_diag = plot_spin_ladder(K_true, J_true, title="Spin ladder (top J couplings, vertical K couplings)")
-    st.pyplot(fig_diag)
+    st.pyplot(plot_spin_ladder(K_true, J_true, title="Spin ladder (top J couplings, vertical K couplings)"))
 
-    # --- Physical Hamiltonian (LaTeX) ---
     st.markdown("### Model Hamiltonian")
     st.markdown("Total qubits: $2L$ (top sites $0..L-1$, bottom sites $L..2L-1$).")
     st.latex(r"""
@@ -490,7 +505,6 @@ with tabs[0]:
     """)
     st.caption("Top chain has nearest-neighbour XX+YY (strengths $J_i$). Each top site $i$ couples via ZZ to its bottom partner $L+i$ with strength $K_i$.")
 
-    # --- Effective block Hamiltonian (LaTeX) ---
     st.markdown("### Effective block Hamiltonian used in FFT→Lanczos")
     st.latex(r"""
     H_{\mathrm{eff}}^{(m)} \;=\; \mathrm{diag}\!\left(d^{(m)}_0,\dots,d^{(m)}_{L-1}\right)
@@ -503,6 +517,30 @@ with tabs[0]:
     \end{cases}
     \qquad S \;=\; \sum_{j=0}^{L-1} K_j.
     """)
+
+    # Initial state explanation
+    st.markdown("### Initial state")
+    st.markdown("We **fix one excitation on the top at site 0**, and set the bottom as a superposition with amplitudes $\\alpha_m$:")
+    st.latex(r"""
+    |\psi(0)\rangle
+    \;=\; |1 0 0 \ldots 0\rangle_{\text{top}}
+          \;\otimes\; \sum_{m=0}^{L-1} \alpha_m\,|m\rangle_{\text{bottom}},
+    \qquad \sum_{m}|\alpha_m|^2=1 .
+    """)
+    if L <= 3:
+        # Product form for L=3:
+        st.latex(r"""
+        |\psi(0)\rangle
+        \;=\; |100\rangle_{\text{top}} \;\otimes\;
+               \big(\alpha_0|100\rangle_{\text{bottom}} + \alpha_1|010\rangle_{\text{bottom}} + \alpha_2|001\rangle_{\text{bottom}}\big).
+        """)
+        # Expanded 6-bit strings
+        terms = expanded_state_terms(L, alpha)
+        if terms:
+            st.markdown("Expanded in the 6-qubit computational basis:")
+            latex_terms = " \\, + \\, ".join([f"({amp:.3g})\\,|{bitstr}\\rangle" for amp, bitstr in terms])
+            st.latex(rf"|\psi(0)\rangle \;=\; {latex_terms}")
+
     if use_pst:
         st.info(f"PST preset: $J_i = J_0\\sqrt{{(i+1)(L-(i+1))}}$ with $J_0={J0:g}$.  Transfer time $t_{{\\rm pst}}=\\pi/(2J_0)\\approx{np.pi/(2*J0):.4g}$")
 
@@ -546,82 +584,48 @@ with tabs[3]:
     else:
         dfs = []
         for m in m_list:
-            # 1) time signal
             f_t = return_amplitude_block_general(K_true, J_true, m, site=0, times=times)
-
-            # 2) FFT → (E_est, p_est)
             E_est, p_est, E_axis, S_norm = fft_from_timeseries(
-                f_t, times,
-                n_levels=n_levels_fft, pad_factor=pad_factor,
+                f_t, times, n_levels=n_levels_fft, pad_factor=pad_factor,
                 use_hann=True, include_dc=include_dc, guard_mult=guard_mult,
                 post_prune=True, min_weight=min_weight, keep_top=n_levels_fft
             )
-
-            # 3) Plot FFT panel
             title = f"FFT return at top site 0 | bottom m={m}"
             fig_fft = plot_fft_panel(E_axis, S_norm, E_est, p_est, title)
             if xlim is not None:
                 ax = fig_fft.axes[0]; ax.set_xlim(*xlim)
             st.pyplot(fig_fft)
 
-            # 4) Skip if no peaks
             if E_est.size == 0:
                 st.warning(f"No peaks found for m={m}. Increase tmax or pad_factor.")
                 continue
 
-            # 5) Lanczos on (E,p) for J/K recovery summary table
-            a_m, b_m, _, T_dummy, _, _, _ = lanczos_detailed(E_est, p_est, enforce_nonneg_b=True)
-
-            # 6) Build a same-length table: a has length L, b has length L-1 → pad b to L
+            # Compact (a,b) for summary table
+            a_m, b_m, _, *_ = lanczos_detailed(E_est, p_est, enforce_nonneg_b=True)
             a_col = np.concatenate([np.round(a_m, 10), np.full(L - len(a_m), np.nan)])
-            b_col = np.concatenate([np.round(b_m, 10), np.full(L - len(b_m), np.nan)])  # pad to L
+            b_col = np.concatenate([np.round(b_m, 10), np.full(L - len(b_m), np.nan)])
             df = pd.DataFrame({"m": np.full(L, m), "n": np.arange(L), "a_n": a_col, "b_n": b_col})
             dfs.append(df)
 
-            # --- NEW: Detailed Lanczos expander ---
+            # Detailed panel
             with st.expander(f"Lanczos details for m={m}", expanded=False):
                 a, b, steps_df, T, G, evals_T, weights_T = lanczos_detailed(E_est, p_est, enforce_nonneg_b=True)
-
-                st.markdown("**Step-by-step iterations**")
-                st.dataframe(steps_df.style.format(precision=6), use_container_width=True)
-
+                st.markdown("**Step-by-step iterations**"); st.dataframe(steps_df.style.format(precision=6), use_container_width=True)
                 st.markdown("**Jacobi (tridiagonal) matrix $T$**")
-                dfT = pd.DataFrame(np.round(T, 10))
-                st.dataframe(dfT, use_container_width=True)
-                st.download_button(
-                    "Download T as CSV",
-                    data=dfT.to_csv(index=False).encode("utf-8"),
-                    file_name=f"T_m{m}.csv",
-                    mime="text/csv",
-                )
-
+                dfT = pd.DataFrame(np.round(T, 10)); st.dataframe(dfT, use_container_width=True)
+                st.download_button("Download T as CSV", data=dfT.to_csv(index=False).encode("utf-8"), file_name=f"T_m{m}.csv", mime="text/csv")
                 st.markdown("**Orthonormality check**: $G = H^\\top H$ (should be $I$)")
-                figG, axG = plt.subplots(figsize=(4.2, 3.6))
-                im = axG.imshow(G)
-                axG.set_title("Inner products of h_n")
-                figG.colorbar(im, ax=axG, fraction=0.046, pad=0.04)
-                figG.tight_layout()
-                st.pyplot(figG)
-
+                figG, axG = plt.subplots(figsize=(4.2, 3.6)); im = axG.imshow(G); axG.set_title("Inner products of h_n")
+                figG.colorbar(im, ax=axG, fraction=0.046, pad=0.04); figG.tight_layout(); st.pyplot(figG)
                 st.markdown("**Consistency check** (eigs of $T$ vs FFT sticks)")
-                comp_df = pd.DataFrame({
-                    "E_from_FFT": np.round(E_est, 10),
-                    "p_from_FFT": np.round(p_est, 10),
-                    "E_from_T":   np.round(evals_T, 10),
-                    "p_from_T":   np.round(weights_T, 10),
-                })
+                comp_df = pd.DataFrame({"E_from_FFT": np.round(E_est, 10), "p_from_FFT": np.round(p_est, 10),
+                                        "E_from_T": np.round(evals_T, 10), "p_from_T": np.round(weights_T, 10)})
                 st.dataframe(comp_df, use_container_width=True)
-
-                # Overlay sticks
                 figS, axS = plt.subplots(figsize=(6.6, 3.4))
                 axS.stem(E_est, p_est, linefmt='-', markerfmt='o', basefmt=' ', label="FFT sticks")
                 axS.stem(evals_T, weights_T, linefmt='--', markerfmt='s', basefmt=' ', label="From T")
-                axS.set_xlabel("Energy E"); axS.set_ylabel("weight")
-                axS.set_title("Spectrum: FFT vs Jacobi-matrix reconstruction")
-                axS.grid(alpha=0.25); axS.legend()
-                figS.tight_layout()
-                st.pyplot(figS)
-
+                axS.set_xlabel("Energy E"); axS.set_ylabel("weight"); axS.set_title("Spectrum: FFT vs Jacobi-matrix reconstruction")
+                axS.grid(alpha=0.25); axS.legend(); figS.tight_layout(); st.pyplot(figS)
                 st.markdown("**Lanczos math**")
                 st.latex(r"""
                 \text{Init:}\quad h_{-1}=0,\qquad h_0(k)=\sqrt{p_k}.
@@ -646,15 +650,12 @@ with tabs[3]:
                 \cfrac{1}{z-a_0-\cfrac{b_0^2}{z-a_1-\cfrac{b_1^2}{\ddots}}}.
                 """)
 
-        # Show combined table if any block succeeded
         if dfs:
             st.markdown("**Recovered Jacobi coefficients per block**")
             st.dataframe(pd.concat(dfs, ignore_index=True))
 
-        # Optional verbose plain-text log (original style)
         if enable_verbose and m_list:
-            st.markdown("---")
-            st.subheader(f"Verbose Lanczos log (m={m_dbg})")
+            st.markdown("---"); st.subheader(f"Verbose Lanczos log (m={m_dbg})")
             f_t = return_amplitude_block_general(K_true, J_true, m_dbg, site=0, times=times)
             E_est, p_est, *_ = fft_from_timeseries(
                 f_t, times, n_levels=n_levels_fft, pad_factor=pad_factor,
@@ -664,15 +665,11 @@ with tabs[3]:
             if E_est.size == 0:
                 st.warning("No peaks for verbose block; adjust tmax/padding.")
             else:
-                # Reconstruct the classic text log using the detailed steps
                 a, b, steps_df, *_ = lanczos_detailed(E_est, p_est, enforce_nonneg_b=True)
                 lines = []
                 for _, row in steps_df.iterrows():
                     n = int(row["n"])
-                    lines.append(
-                        f"[Lanczos] n={n}: a[{n}]={row['a_n']:.{decimals}f}"
-                        + ("" if n == 0 else f", uses b[{n-1}]={row['b_prev']:.{decimals}f}")
-                    )
+                    lines.append(f"[Lanczos] n={n}: a[{n}]={row['a_n']:.{decimals}f}" + ("" if n == 0 else f", uses b[{n-1}]={row['b_prev']:.{decimals}f}"))
                 lines.append(f"[Lanczos] Done. a={np.round(a, decimals)}, b={np.round(b, decimals)}")
                 st.code("\n".join(lines), language="text")
 
@@ -689,8 +686,7 @@ with tabs[4]:
                 use_hann=True, include_dc=include_dc, guard_mult=guard_mult,
                 post_prune=True, min_weight=min_weight, keep_top=n_levels_fft
             )
-            if E_est.size == 0:
-                continue
+            if E_est.size == 0: continue
             a_m, b_m, _, *_ = lanczos_detailed(E_est, p_est, enforce_nonneg_b=True)
             if len(a_m) == L and len(b_m) == L-1:
                 a_lists.append(a_m); b_lists.append(b_m); used_ms.append(m)
@@ -700,21 +696,13 @@ with tabs[4]:
         else:
             J_est, J_spread = recover_J_from_blocks(b_lists, robust="median")
             K_est, S_est, resK = recover_K_from_blocks_with_m(a_lists, used_ms)
-
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**J: true vs estimated**")
-                st.dataframe(pd.DataFrame({
-                    "J_true": np.round(J_true,6),
-                    "J_est":  np.round(J_est,6),
-                    "spread": np.round(J_spread,6)
-                }))
+                st.dataframe(pd.DataFrame({"J_true": np.round(J_true,6), "J_est": np.round(J_est,6), "spread": np.round(J_spread,6)}))
             with col2:
                 st.markdown("**K: true vs estimated**")
-                st.dataframe(pd.DataFrame({
-                    "K_true": np.round(K_true,6),
-                    "K_est":  np.round(K_est,6)
-                }))
+                st.dataframe(pd.DataFrame({"K_true": np.round(K_true,6), "K_est": np.round(K_est,6)}))
                 st.caption(f"sum(K)≈{S_est:.6f}, residual {resK:.2e}")
 
 # --- Eigenvalues ---
