@@ -484,6 +484,42 @@ def lanczos_math_lines(E, p, prec=6, max_show=6):
     return lines
 
 
+def rung_zz_table(K, i, m):
+    """
+    Build a rung-by-rung table explaining the ZZ contribution to d_i^(m):
+      row j: top|0/1>, z_top ∈ {+1,-1}, bottom|0/1>, z_bot ∈ {+1,-1},
+              product = z_top*z_bot, numeric contribution = K_j * product
+    Returns (df, diag_value, S).
+    """
+    K = np.asarray(K, float)
+    L = len(K)
+    rows = []
+    for j in range(L):
+        top_state = "|1⟩" if j == i else "|0⟩"
+        z_top = -1 if j == i else +1
+        bot_state = "|1⟩" if j == m else "|0⟩"
+        z_bot = -1 if j == m else +1
+        prod = z_top * z_bot
+        contrib_val = K[j] * prod
+        # symbolic ±K_j
+        sign = "＋" if prod > 0 else "−"
+        contrib_sym = f"{sign}K_{j}"
+        rows.append({
+            "Rung j": j,
+            "Top State": top_state,
+            "z_top": z_top,
+            "Bottom State": bot_state,
+            "z_bot": z_bot,
+            "Product z_top·z_bot": prod,
+            "ZZ Contribution (symbolic)": contrib_sym,
+            "ZZ Contribution (value)": contrib_val,
+        })
+    df = pd.DataFrame(rows)
+    diag = float(df["ZZ Contribution (value)"].sum())
+    S = float(np.sum(K))
+    return df, diag, S
+
+
 # ===========================
 # Streamlit UI
 # ===========================
@@ -602,6 +638,51 @@ with tabs[0]:
     \end{cases}
     \qquad S \;=\; \sum_{j=0}^{L-1} K_j.
     """)
+    
+
+# --- Worked rung-by-rung ZZ table (under Effective block Hamiltonian) ---
+with st.expander("Worked example: ZZ contributions per rung (builds dᵢ^(m))", expanded=True):
+    st.markdown(
+        "Use this table to see exactly how the diagonal entry "
+        r"$d_i^{(m)}=\sum_j K_j\,z^{\text{top}}_j z^{\text{bot}}_j$ "
+        "is formed from the ZZ terms on each rung."
+    )
+    # Default to your example when possible: L=3, i=m=1
+    default_im = 1 if L >= 2 else 0
+    i_ex = st.number_input("Top excitation site i", min_value=0, max_value=L-1,
+                           value=min(default_im, L-1), step=1, key="zz_i")
+    m_ex = st.number_input("Bottom excitation site m", min_value=0, max_value=L-1,
+                           value=min(default_im, L-1), step=1, key="zz_m")
+
+    df_zz, diag_val, S_val = rung_zz_table(K_true, i_ex, m_ex)
+    st.dataframe(df_zz.style.format({
+        "z_top": "{:+d}",
+        "z_bot": "{:+d}",
+        "Product z_top·z_bot": "{:+d}",
+        "ZZ Contribution (value)": "{:+.6g}",
+    }), use_container_width=True)
+
+    # Show the algebra in LaTeX (robust to braces)
+    st.markdown("### Diagonal entry calculation")
+    
+    # 1) S line: S = sum_{j=0}^{L-1} K_j = <number>
+    tex_S = r"\displaystyle S \;=\; \sum_{j=0}^{%d} K_j \;=\; %.6g" % (L-1, S_val)
+    st.latex(tex_S)
+    
+    # 2) d_i^(m) line
+    if i_ex == m_ex:
+        tex_d = r"\displaystyle d_{%d}^{(%d)} \;=\; S \;=\; %.6g" % (i_ex, m_ex, S_val)
+        st.latex(tex_d)
+        st.caption("When top and bottom excitations are on the same rung (i = m), there is no shift from S.")
+    else:
+        tex_d = (
+            r"\displaystyle d_{%d}^{(%d)} \;=\; S - 2\big(K_{%d}+K_{%d}\big)"
+            r"\;=\; %.6g - 2\big(%.6g+%.6g\big) \;=\; %.6g"
+        ) % (i_ex, m_ex, i_ex, m_ex, S_val, K_true[i_ex], K_true[m_ex], diag_val)
+        st.latex(tex_d)
+        st.caption("Two rungs (i and m) are misaligned, each contributing a −2K shift relative to the S baseline.")
+
+
 
     # Initial state explanation
     st.markdown("### Initial state")
